@@ -71,7 +71,7 @@ class CosyVoice2Model:
             **ENGINE_ARGS,
         )
         self.llm_engine: AsyncLLMEngine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.thread_count = 10
+        self.thread_count = 1 # set to 1 to avoid oom
         self.thread_executor = ThreadPoolExecutor(max_workers=self.thread_count)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -180,8 +180,9 @@ class CosyVoice2Model:
                 await asyncio.sleep(0.005)
 
     async def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
-        prompt_text = tensor_to_list(prompt_text + torch.tensor(6564))
-        llm_prompt_speech_token = tensor_to_list(llm_prompt_speech_token)
+        device = prompt_text.device
+        prompt_text = tensor_to_list(prompt_text + torch.tensor(6564, device=device))
+        llm_prompt_speech_token = tensor_to_list(llm_prompt_speech_token.to(device))
 
         start_time = time.time()
         if isinstance(text, Union[Generator,AsyncGenerator]):
@@ -252,6 +253,10 @@ class CosyVoice2Model:
 
 
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, token_offset, finalize=False, speed=1.0):
+        # 清空CUDA cache， 注意如果要加，需要增加 threading lock 以避免显存访问冲突。默认不用加。
+        # torch.cuda.synchronize()
+        # torch.cuda.empty_cache()
+
         torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑
         stream = self.stream_pool.get()
         with torch.cuda.stream(stream):
@@ -295,6 +300,11 @@ class CosyVoice2Model:
             llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             prompt_speech_feat=torch.zeros(1, 0, 80), stream=False, speed=1.0, **kwargs):
+        # 显式将输入张量移至CPU
+        prompt_text = prompt_text.cpu()
+        llm_prompt_speech_token = llm_prompt_speech_token.cpu()
+        flow_prompt_speech_token = flow_prompt_speech_token.to(self.device)
+        prompt_speech_feat = prompt_speech_feat.to(self.device)
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         async with self.lock:
