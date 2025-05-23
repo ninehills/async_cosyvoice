@@ -71,7 +71,8 @@ class CosyVoice2Model:
             **ENGINE_ARGS,
         )
         self.llm_engine: AsyncLLMEngine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.thread_count = 1 # set to 1 to avoid oom
+        self.thread_count = 4 # set to 1 to avoid oom
+        self.peer_chunk_token_num = 60 # 设置初始的每个chunk处理语音token的数量
         self.thread_executor = ThreadPoolExecutor(max_workers=self.thread_count)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -315,7 +316,7 @@ class CosyVoice2Model:
         llm_task = asyncio.create_task(self.llm_job(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
         if stream is True:
             token_offset = 0
-            peer_chunk_token_num = 15     # 设置初始的每个chunk处理语音token的数量
+            peer_chunk_token_num = self.peer_chunk_token_num
             await asyncio.sleep(0.05)
             loop = asyncio.get_event_loop()
             start_time = time.time()

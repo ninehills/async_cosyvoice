@@ -3,6 +3,9 @@ from io import BytesIO
 from typing import AsyncGenerator, Any, AsyncIterator
 
 import lameenc
+import asyncio
+import time
+import logging
 import numpy as np
 import torch
 import torchaudio
@@ -218,12 +221,22 @@ async def _encode_mp3_stream(
     encoder.set_quality(9)
     encoder.set_vbr(4)
     encoder.set_vbr_quality(9)
+    first_mp3 = True
+    first_mp3_yield_time = None
     async for chunk in audio_chunks:
         pcm_bytes = _pcm_to_bytes(chunk, 16)  # MP3通常使用16位
+        if len(pcm_bytes) > 0 and first_mp3:
+            first_mp3_yield_time = time.perf_counter()
         mp3_data = encoder.encode(pcm_bytes)
+        # mp3_data = await asyncio.to_thread(encoder.encode, pcm_bytes)
         if mp3_data:
+            if first_mp3_yield_time is not None and first_mp3:
+                elapsed_time = time.perf_counter() - first_mp3_yield_time
+                first_mp3 = False
+                logging.debug(f"mp3 first packet elapsed time: {elapsed_time:.10f} seconds")
             yield bytes(mp3_data)
     # 刷新编码器缓冲区
     final_data = encoder.flush()
+    #final_data = await asyncio.to_thread(encoder.flush)
     if final_data:
         yield bytes(final_data)
