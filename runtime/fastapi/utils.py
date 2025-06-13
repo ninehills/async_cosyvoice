@@ -3,7 +3,6 @@ from io import BytesIO
 from typing import AsyncGenerator, Any, AsyncIterator
 
 import lameenc
-import asyncio
 import time
 import logging
 import numpy as np
@@ -105,6 +104,8 @@ async def convert_audio_tensor_to_bytes(
         channels, bit_depth = 1, 16
         bitrate = 128
         if format == 'mp3':
+            # 生成 MP3 头（ID3信息）
+            yield create_simple_id3_header("Generated Audio")
             async for data in _encode_mp3_stream(tensor_generator, sample_rate, channels, bitrate):
                 yield data
         elif format == 'pcm':
@@ -222,21 +223,60 @@ async def _encode_mp3_stream(
     encoder.set_vbr(4)
     encoder.set_vbr_quality(9)
     first_mp3 = True
-    first_mp3_yield_time = None
+    start = time.perf_counter()
     async for chunk in audio_chunks:
+        if first_mp3:
+            encode_start = time.perf_counter()
         pcm_bytes = _pcm_to_bytes(chunk, 16)  # MP3通常使用16位
-        if len(pcm_bytes) > 0 and first_mp3:
-            first_mp3_yield_time = time.perf_counter()
         mp3_data = encoder.encode(pcm_bytes)
-        # mp3_data = await asyncio.to_thread(encoder.encode, pcm_bytes)
         if mp3_data:
-            if first_mp3_yield_time is not None and first_mp3:
-                elapsed_time = time.perf_counter() - first_mp3_yield_time
+            if first_mp3:
+                now = time.perf_counter()
                 first_mp3 = False
-                logging.debug(f"mp3 first packet elapsed time: {elapsed_time:.10f} seconds")
+                logging.debug(f"mp3 ttfb: {(now-start):.10f} s, encode time: {(now-encode_start):.10f} s")
             yield bytes(mp3_data)
     # 刷新编码器缓冲区
     final_data = encoder.flush()
     #final_data = await asyncio.to_thread(encoder.flush)
     if final_data:
         yield bytes(final_data)
+
+def _synchsafe_int(value: int) -> bytes:
+    """将整数转换为4字节的同步安全整数。"""
+    b1 = (value >> 21) & 0x7F
+    b2 = (value >> 14) & 0x7F
+    b3 = (value >> 7) & 0x7F
+    b4 = value & 0x7F
+    return bytes([b1, b2, b3, b4])
+
+def create_simple_id3_header(title: str) -> bytes:
+    """
+    使用标准库生成一个只包含标题 (TIT2) 的简单 ID3v2.3 Header。
+
+    Args:
+        title (str): 要写入的标题。
+
+    Returns:
+        bytes: 完整的 ID3v2.3 标签数据。
+    """
+    # 1. 创建 TIT2 帧 (标题)
+    #    - 帧ID: b'TIT2'
+    #    - 帧大小: 后面数据的长度
+    #    - 帧标志: b'\x00\x00'
+    #    - 编码标志: b'\x03' 代表 UTF-8
+    #    - 文本内容: UTF-8 编码的标题
+    encoded_text = b'\x03' + title.encode('utf-8')
+    frame_size = len(encoded_text)
+    frame_header = b'TIT2' + struct.pack('>I', frame_size) + b'\x00\x00'
+    frame = frame_header + encoded_text
+
+    # 2. 创建 ID3 标签头
+    #    - 标识符: b'ID3'
+    #    - 版本: b'\x03\x00' (v2.3)
+    #    - 标志: b'\x00'
+    #    - 总大小: 所有帧的总长度 (这里只有一个帧)，格式为同步安全整数
+    tag_size = len(frame)
+    tag_header = b'ID3\x03\x00\x00' + _synchsafe_int(tag_size)
+
+    # 3. 合并头部和帧数据
+    return tag_header + frame
