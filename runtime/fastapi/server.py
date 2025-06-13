@@ -22,9 +22,16 @@ from utils import convert_audio_tensor_to_bytes, load_audio_from_bytes
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f'{ROOT_DIR}/../../..')
 sys.path.append(f'{ROOT_DIR}/../../../third_party/Matcha-TTS')
-from async_cosyvoice.async_cosyvoice import AsyncCosyVoice2
 
-logging.basicConfig(level=logging.INFO,
+log_level = logging.INFO
+if os.getenv("MOCK_ENABLED", "0") == "1":
+    from mock_cosyvoice import MockAsyncCosyVoice as AsyncCosyVoice2
+    # Mock 时开启 Debug 日志
+    log_level = logging.DEBUG
+else:
+    from async_cosyvoice.async_cosyvoice import AsyncCosyVoice2
+
+logging.basicConfig(level=log_level,
                     format='%(asctime)s %(levelname)s %(message)s')
 
 cosyvoice: AsyncCosyVoice2 | None = None
