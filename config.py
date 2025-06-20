@@ -3,7 +3,7 @@
 # AsyncEngineArgs
 ENGINE_ARGS = {
     # "enforce_eager": True,
-    "gpu_memory_utilization": 0.4,
+    "gpu_memory_utilization": 0.3,
     "max_num_batched_tokens": 1024,
     "max_model_len": 2048,
     "max_num_seqs": 256,
@@ -40,7 +40,7 @@ OVERWRITE_NORMALIZER_CACHE = True
 # 删除已经编译的模型./pretrained_models/CosyVoice2-0.5B/flow.decoder.estimator.fp16.mygpu.plan
 # 重新运行服务器代码  --trt 将重新编译模型，到时将生成新的模型，并单个 estimator 只占用 1.6GB 显存
 # 根据GPU显存大小量及性能设置合适的 ESTIMATOR_COUNT
-ESTIMATOR_COUNT = 8
+ESTIMATOR_COUNT = 4
 
 
 # 注册音色信息，用于frontend中生成音色信息, 请根据自己的实际情况进行使用

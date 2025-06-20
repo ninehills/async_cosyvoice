@@ -71,7 +71,7 @@ class CosyVoice2Model:
             **ENGINE_ARGS,
         )
         self.llm_engine: AsyncLLMEngine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.thread_count = 8 # set to 1 to avoid oom
+        self.thread_count = 4 # set to 1 to avoid oom
         self.peer_chunk_token_num = 40 # 设置初始的每个chunk处理语音token的数量
         self.thread_executor = ThreadPoolExecutor(max_workers=self.thread_count)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
