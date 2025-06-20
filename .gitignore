@@ -51,3 +51,5 @@ pretrained_models/*
 *.tar
 
 private_config.py
+.env
+*.log
