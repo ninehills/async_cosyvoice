@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import time
-from typing import Generator, Union, AsyncGenerator
+from typing import Generator, Union, AsyncGenerator, Callable
 os.environ["VLLM_USE_V1"] = '1'
 
 import torch
@@ -116,9 +116,9 @@ class AsyncCosyVoice2:
                 yield model_output
                 start_time = time.time()
 
-    async def inference_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, stream=False, speed=1.0, text_frontend=True):
+    async def inference_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, stream=False, speed=1.0, text_frontend=True, spk_file: Callable = None):
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_instruct2_by_spk_id(i, instruct_text, spk_id)
+            model_input = self.frontend.frontend_instruct2_by_spk_id(i, instruct_text, spk_id, spk_file)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
             async for model_output in self.model.async_tts(**model_input, stream=stream, speed=speed):
@@ -127,10 +127,10 @@ class AsyncCosyVoice2:
                 yield model_output
                 start_time = time.time()
 
-    async def inference_zero_shot_by_spk_id(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True):
+    async def inference_zero_shot_by_spk_id(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True, spk_file: Callable = None):
         """使用预定义的说话人执行 zero_shot 推理"""
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_zero_shot_by_spk_id(i, spk_id)
+            model_input = self.frontend.frontend_zero_shot_by_spk_id(i, spk_id, spk_file)
             start_time = time.time()
             last_time = start_time
             chunk_index = 0

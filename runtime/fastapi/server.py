@@ -16,21 +16,74 @@ from pydantic import BaseModel, Field, ValidationError
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, status
+from pydantic import RedisDsn
+import redis.asyncio as redis
 
 from utils import convert_audio_tensor_to_bytes, load_audio_from_bytes
+from voice_storage import VoiceStorage
+from model import VoiceMeta
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f'{ROOT_DIR}/../../..')
 sys.path.append(f'{ROOT_DIR}/../../../third_party/Matcha-TTS')
-from async_cosyvoice.async_cosyvoice import AsyncCosyVoice2
 
-logging.basicConfig(level=logging.INFO,
+log_level = logging.INFO
+if os.getenv("MOCK_ENABLED", "0") == "1":
+    from mock_cosyvoice import MockAsyncCosyVoice as AsyncCosyVoice2
+    # Mock 时开启 Debug 日志
+    log_level = logging.DEBUG
+else:
+    from async_cosyvoice.async_cosyvoice import AsyncCosyVoice2
+
+logging.basicConfig(level=log_level,
                     format='%(asctime)s %(levelname)s %(message)s')
 
+# 配置
+class UserAuth(BaseModel):
+    user_id: str
+    access_key: str
+
+
+class Settings(BaseSettings):
+    # 预设用户和AccessKey，默认是 abc:abc
+    preset_users: list[UserAuth] = [UserAuth(user_id="abc", access_key="abc")]
+    # redis 地址
+    redis_dsn: RedisDsn = 'redis://user:pass@localhost:6379/0'
+
+    model_config = SettingsConfigDict(env_file=".env")
+
+
+# 全局实例
 cosyvoice: AsyncCosyVoice2 | None = None
+settings = Settings()
+# Redis
+redis_client = redis.Redis.from_url(str(settings.redis_dsn))
+# 音色存储
+voice_storage = VoiceStorage(redis_client=redis_client)
+# 鉴权
+access_keys = {user.access_key: user.user_id for user in settings.preset_users}
+security = HTTPBearer()
+
+# 依赖项：获取当前用户ID
+async def get_current_user_id(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+) -> str:
+    access_key = credentials.credentials
+    user_id = access_keys.get(access_key)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid access key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user_id
 
 
 app = FastAPI()
+
 
 # 配置CORS
 app.add_middleware(
@@ -47,7 +100,23 @@ class VoiceUploadResponse(BaseModel):
                      examples=["speech:your-voice-name:xxx:xxx"],
                      description="音色对应的URI")
 
-# noinspection PyMethodParameters
+class VoiceListResponse(BaseModel):
+    """音频列表响应参数"""
+    results: list[VoiceMeta] = Field(
+        ...,
+        description="音色列表"
+    )
+
+
+class VoiceDeletionRequest(BaseModel):
+    """音频删除请求参数"""
+    uri: str = Field(
+        ...,
+        examples=["speech:your-voice-name:xxx:xxx"],
+        description="要删除的音色URI"
+    )
+
+
 class SpeechRequest(BaseModel):
     """语音合成请求参数"""
     input: str = Field(
@@ -62,6 +131,10 @@ class SpeechRequest(BaseModel):
             "speech:voice-name:xxx:xxx",
         ],
         description="音色选择"
+    )
+    model: Optional[str] = Field(
+        default="FunAudioLLM/CosyVoice2-0.5B",
+        description="模型选择，目前支持FunAudioLLM/CosyVoice2-0.5B"
     )
     response_format: Optional[Literal["mp3", "wav", "pcm"]] = Field(
         "mp3",
@@ -81,20 +154,28 @@ class SpeechRequest(BaseModel):
         description="语速控制[0.25-4.0]"
     )
 
-def save_voice_data(customName: str, audio_data: bytes, text: str) -> str:
+async def save_voice_data(customName: str, audio_data: bytes, text: str, user_id: str, model: str) -> str:
     """保存音频数据并生成音色对应的URI"""
-    user_id = "xxx"
     voice_id = str(uuid.uuid4())[:8]
-    uri = f"speech:{customName}:{user_id}:{voice_id}"
+    uri = f"speech:{user_id}:{customName}:{voice_id}"
+    # TODO: 目前上传音频是同步阻塞的，会导致服务阻塞大约2-3s，此处应该使用异步方式。
     prompt_speech_16k = load_audio_from_bytes(audio_data, 16000)
-    cosyvoice.frontend.generate_spk_info(
+    voice_data = cosyvoice.frontend.generate_spk_info(
         uri,
         text,
         prompt_speech_16k,
         24000,
         customName
     )
+    voice_meta = VoiceMeta(
+        model=model,
+        customName=customName,
+        text=text,
+        uri=uri,
+    )
+    await voice_storage.save_voice(uri, voice_meta, voice_data)
     return uri
+
 
 async def generator_wrapper(audio_data_generator: AsyncGenerator[dict, None]) -> AsyncGenerator[torch.Tensor, None]:
     async for chunk in audio_data_generator:
@@ -118,6 +199,7 @@ async def generate_audio_content(request: SpeechRequest) -> AsyncGenerator[bytes
                 stream=request.stream,
                 speed=request.speed,
                 text_frontend=True,
+                spk_file=None,
             ))
         else:
             audio_tensor_data_generator = generator_wrapper(cosyvoice.inference_zero_shot_by_spk_id(
@@ -126,6 +208,7 @@ async def generate_audio_content(request: SpeechRequest) -> AsyncGenerator[bytes
                 stream=request.stream,
                 speed=request.speed,
                 text_frontend=True,
+                spk_file=None,
             ))
 
         audio_bytes_data_generator = convert_audio_tensor_to_bytes(
@@ -149,7 +232,7 @@ def get_content_type(fmt: str, sample_rate: int) -> str:
     }[fmt]
 
 @app.post("/v1/audio/speech")
-async def text_to_speech(request: SpeechRequest):
+async def text_to_speech(request: SpeechRequest, user_id: Annotated[str, Depends(get_current_user_id)]):
     """## 文本转语音接口"""
     try:
         # 构建响应头
@@ -166,24 +249,67 @@ async def text_to_speech(request: SpeechRequest):
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     except Exception as e:
+        logging.error("TTS failed: {e}", exc_info=True)
         raise HTTPException(500, detail=str(e))
 
 @app.post("/v1/uploads/audio/voice", response_model=VoiceUploadResponse)
 async def upload_voice(
+    user_id: Annotated[str, Depends(get_current_user_id)],
+    model: Optional[str] = Form(default="FunAudioLLM/CosyVoice2-0.5B"),
     customName: str = Form(...),
     text: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
 ):
-    """## 增加用户自定义音色"""
+    """增加用户自定义音色"""
     try:
         audio_data = await file.read()
-        uri = save_voice_data(customName, audio_data, text)
+        uri = await save_voice_data(customName, audio_data, text, user_id, model)
         return VoiceUploadResponse(uri=uri)
     except ValidationError as ve:
+        logging.error(f"Upload voice validation error: {ve}")
         raise HTTPException(422, detail=ve.errors())
     except Exception as e:
-        logging.error(f"上传失败: {str(e)}")
+        logging.error(f"上传失败: {str(e)}", exc_info=True)
         raise HTTPException(500, detail=str(e))
+
+
+@app.get("/v1/audio/voice/list", response_model=VoiceListResponse)
+async def list_voices(user_id: Annotated[str, Depends(get_current_user_id)]):
+    """获取用户的参考音频列表"""
+    try:
+        voices = await voice_storage.list_voices(user_id)
+        return VoiceListResponse(results=voices)
+    except Exception as e:
+        logging.error(f"获取音色列表失败: {str(e)}", exc_info=True)
+        raise HTTPException(500, detail=str(e))
+
+@app.post("/v1/audio/voice/deletions")
+async def delete_voice(request: VoiceDeletionRequest, user_id: Annotated[str, Depends(get_current_user_id)]):
+    """删除用户的参考音频"""
+    try:
+        # 验证URI是否属于当前用户
+        uri_parts = request.uri.split(":")
+        if len(uri_parts) < 3 or uri_parts[1] != user_id:
+            raise HTTPException(403, detail="无权删除此音色")
+        
+        await voice_storage.delete_voice(request.uri)
+        # 从frontend 缓存中删除音色
+        cosyvoice.frontend.delete_spk_info(request.uri)
+        return {}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"删除音色失败: {str(e)}", exc_info=True)
+        raise HTTPException(500, detail=str(e))
+
+@app.get("/auth/me")
+async def read_current_user(user_id: Annotated[str, Depends(get_current_user_id)]):
+    """返回当前用户信息
+    
+        Test: curl --header 'Authorization: Bearer 123456' http://127.0.0.1:8022/auth/me
+    """
+    return {"user_id": user_id}
+
 
 def main(args):
     global cosyvoice

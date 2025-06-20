@@ -394,7 +394,7 @@ class CosyVoiceFrontEnd:
                        'flow_embedding': embedding}
         return model_input
 
-    def generate_spk_info(self, spk_id: str, prompt_text: str, prompt_speech_16k: torch.Tensor, resample_rate:int=24000, name: str=None):
+    def generate_spk_info(self, spk_id: str, prompt_text: str, prompt_speech_16k: torch.Tensor, resample_rate:int=24000, name: str=None) -> bytes:
         assert isinstance(spk_id, str)
         prompt_text_token, _ = self._extract_text_token(prompt_text)
         prompt_speech_resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)(prompt_speech_16k)
@@ -415,19 +415,28 @@ class CosyVoiceFrontEnd:
             speech_token=speech_token,
             embedding=embedding,
         )
-        self.add_spk_info(spk_id, spk_info)
+        return self.add_spk_info(spk_id, spk_info)
 
-    def add_spk_info(self, spk_id: str, spk_info: Union[dict, SpeakerInfo]):
+    def add_spk_info(self, spk_id: str, spk_info: Union[dict, SpeakerInfo]) -> bytes:
         if isinstance(spk_info, BaseModel):
             spk_info = spk_info.model_dump()
         self.spk2info[spk_id] = spk_info
-        torch.save(self.spk2info[spk_id], os.path.join(self.spk2info_path, spk_id + '.pt'))
+        spk_info_path = os.path.join(self.spk2info_path, spk_id + '.pt')
+        torch.save(self.spk2info[spk_id], spk_info_path)
+        with open(spk_info_path, 'rb') as f:
+            return f.read()
 
-    def load_spk_info(self, spk_id: str):
+    def load_spk_info(self, spk_id: str, spk_file: Callable = None):
         if spk_id not in self.spk2info:
             spk_info_path = os.path.join(self.spk2info_path, spk_id + '.pt')
             if not os.path.exists(spk_info_path):
-                raise ValueError(f'not found spk2info: {spk_id}')
+                if spk_file:
+                    # 如果spk 本地存储不存在，而传入了spk_file 方法通过 spk_id 加载文件
+                    spk_info_bin = spk_file(spk_id)
+                    with open(spk_info_path, 'wb') as f:
+                        f.write(spk_info_bin)
+                else:
+                    raise ValueError(f'not found spk2info: {spk_id} and no spk_file')
             spk_info = torch.load(spk_info_path, map_location=self.device, weights_only=False)
             self.spk2info[spk_id] = spk_info
 
@@ -437,8 +446,8 @@ class CosyVoiceFrontEnd:
         if os.path.exists(os.path.join(self.spk2info_path, spk_id + '.pt')):
             os.remove(os.path.join(self.spk2info_path, spk_id + '.pt'))
 
-    def frontend_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id):
-        self.load_spk_info(spk_id)
+    def frontend_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, spk_file: Callable = None):
+        self.load_spk_info(spk_id, spk_file)
         tts_text_token, _ = self._extract_text_token(tts_text)
         prompt_text_token, _ = self._extract_text_token(instruct_text + '<|endofprompt|>')
         model_input = {'text': tts_text_token,
@@ -450,8 +459,8 @@ class CosyVoiceFrontEnd:
         }
         return model_input
 
-    def frontend_zero_shot_by_spk_id(self, tts_text, spk_id):
-        self.load_spk_info(spk_id)
+    def frontend_zero_shot_by_spk_id(self, tts_text, spk_id, spk_file: Callable = None):
+        self.load_spk_info(spk_id, spk_file)
         tts_text_token, _ = self._extract_text_token(tts_text)
         model_input = {'text': tts_text_token,
                        'prompt_text': self.spk2info[spk_id]['prompt_text_token'],
