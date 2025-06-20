@@ -112,8 +112,7 @@ class MockAsyncCosyVoice:
     
     async def inference_instruct2_by_spk_id(self, tts_text: str, instruct_text: str, 
                                            spk_id: str, stream: bool = False, 
-                                           speed: float = 1.0, text_frontend: bool = True,
-                                           spk_file: Callable = None) -> AsyncGenerator[Dict[str, Any], None]:
+                                           speed: float = 1.0, text_frontend: bool = True) -> AsyncGenerator[Dict[str, Any], None]:
         """
         使用指令和说话人ID执行推理的Mock实现
         
@@ -137,8 +136,7 @@ class MockAsyncCosyVoice:
     
     async def inference_zero_shot_by_spk_id(self, tts_text: str, spk_id: str, 
                                           stream: bool = False, speed: float = 1.0, 
-                                          text_frontend: bool = True,
-                                          spk_file: Callable = None) -> AsyncGenerator[Dict[str, Any], None]:
+                                          text_frontend: bool = True) -> AsyncGenerator[Dict[str, Any], None]:
         """
         使用说话人ID执行zero-shot推理的Mock实现
         

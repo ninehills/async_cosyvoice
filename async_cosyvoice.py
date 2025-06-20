@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 
 class AsyncCosyVoice2:
-    def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False):
+    def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False, cache_dir='./cache'):
         self.instruct = True if '-Instruct' in model_dir else False
         self.model_dir = model_dir
         self.fp16 = fp16
@@ -39,7 +39,8 @@ class AsyncCosyVoice2:
                                           '{}/campplus.onnx'.format(model_dir),
                                           '{}/speech_tokenizer_v2.onnx'.format(model_dir),
                                           '{}/spk2info.pt'.format(model_dir),
-                                          configs['allowed_special'])
+                                          configs['allowed_special'],
+                                          cache_dir)
         self.sample_rate = configs['sample_rate']
         if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
             load_jit, load_trt, fp16 = False, False, False
@@ -116,9 +117,9 @@ class AsyncCosyVoice2:
                 yield model_output
                 start_time = time.time()
 
-    async def inference_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, stream=False, speed=1.0, text_frontend=True, spk_file: Callable = None):
+    async def inference_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, stream=False, speed=1.0, text_frontend=True):
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_instruct2_by_spk_id(i, instruct_text, spk_id, spk_file)
+            model_input = self.frontend.frontend_instruct2_by_spk_id(i, instruct_text, spk_id)
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
             async for model_output in self.model.async_tts(**model_input, stream=stream, speed=speed):
@@ -127,10 +128,10 @@ class AsyncCosyVoice2:
                 yield model_output
                 start_time = time.time()
 
-    async def inference_zero_shot_by_spk_id(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True, spk_file: Callable = None):
+    async def inference_zero_shot_by_spk_id(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True):
         """使用预定义的说话人执行 zero_shot 推理"""
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_zero_shot_by_spk_id(i, spk_id, spk_file)
+            model_input = self.frontend.frontend_zero_shot_by_spk_id(i, spk_id)
             start_time = time.time()
             last_time = start_time
             chunk_index = 0

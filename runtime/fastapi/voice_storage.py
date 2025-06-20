@@ -25,7 +25,6 @@ class VoiceStorage():
     async def get_voice(self, uri: str) -> bytes:
         """获取指定 URI 的音色文件
         
-        注意：因为是先从缓存中获取，所以目前 get_voice 可能会获得已经删除的 voice
         Args:
             uri: 音色 URI
         

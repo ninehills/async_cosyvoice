@@ -29,6 +29,7 @@ from model import VoiceMeta
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f'{ROOT_DIR}/../../..')
 sys.path.append(f'{ROOT_DIR}/../../../third_party/Matcha-TTS')
+CACHE_DIR = os.path.join(ROOT_DIR, 'cache')
 
 log_level = logging.INFO
 if os.getenv("MOCK_ENABLED", "0") == "1":
@@ -199,7 +200,6 @@ async def generate_audio_content(request: SpeechRequest) -> AsyncGenerator[bytes
                 stream=request.stream,
                 speed=request.speed,
                 text_frontend=True,
-                spk_file=None,
             ))
         else:
             audio_tensor_data_generator = generator_wrapper(cosyvoice.inference_zero_shot_by_spk_id(
@@ -208,7 +208,6 @@ async def generate_audio_content(request: SpeechRequest) -> AsyncGenerator[bytes
                 stream=request.stream,
                 speed=request.speed,
                 text_frontend=True,
-                spk_file=None,
             ))
 
         audio_bytes_data_generator = convert_audio_tensor_to_bytes(
@@ -234,6 +233,18 @@ def get_content_type(fmt: str, sample_rate: int) -> str:
 @app.post("/v1/audio/speech")
 async def text_to_speech(request: SpeechRequest, user_id: Annotated[str, Depends(get_current_user_id)]):
     """## 文本转语音接口"""
+    # 判断 CacheDir 中是否有目标 pt 文件，没有则从 Redis 中下载（仅判断用speech开头的，不判断系统音色）
+    if request.voice.startswith("speech:"):
+        spk_info_path = os.path.join(CACHE_DIR, request.voice + '.pt')
+        if not os.path.exists(spk_info_path):
+            logging.info(f"voice {request.voice} not in cache dir {spk_info_path}, download it.")
+            try:
+                spk_info = await voice_storage.get_voice(request.voice)
+                if spk_info:
+                    with open(spk_info_path, 'wb') as f:
+                        f.write(spk_info)
+            except KeyError as e:
+                logging.warning(f"voice {request.voice} not found in redis, please upload it first: {e}")
     try:
         # 构建响应头
         content_type = get_content_type(
@@ -313,7 +324,7 @@ async def read_current_user(user_id: Annotated[str, Depends(get_current_user_id)
 
 def main(args):
     global cosyvoice
-    cosyvoice = AsyncCosyVoice2(args.model_dir, load_jit=args.load_jit, load_trt=args.load_trt, fp16=args.fp16)
+    cosyvoice = AsyncCosyVoice2(args.model_dir, load_jit=args.load_jit, load_trt=args.load_trt, fp16=args.fp16, cache_dir=CACHE_DIR)
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

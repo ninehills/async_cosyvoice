@@ -183,7 +183,8 @@ class CosyVoiceFrontEnd:
                  campplus_model: str,
                  speech_tokenizer_model: str,
                  spk2info: str = '',
-                 allowed_special: str = 'all'):
+                 allowed_special: str = 'all',
+                 spk2info_path: str = "./spk2info"):
         self.tokenizer = get_tokenizer()
         self.feat_extractor = feat_extractor
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -203,7 +204,7 @@ class CosyVoiceFrontEnd:
             for spk_id, info in spk_infos.items():
                 self.spk2info[spk_id] = info
 
-        self.spk2info_path = os.path.join(os.path.dirname(os.path.abspath(spk2info)), 'spk2info')
+        self.spk2info_path = spk2info_path
         os.makedirs(self.spk2info_path, exist_ok=True)
         self.allowed_special = allowed_special
         self.use_ttsfrd = use_ttsfrd
@@ -426,17 +427,11 @@ class CosyVoiceFrontEnd:
         with open(spk_info_path, 'rb') as f:
             return f.read()
 
-    def load_spk_info(self, spk_id: str, spk_file: Callable = None):
+    def load_spk_info(self, spk_id: str):
         if spk_id not in self.spk2info:
             spk_info_path = os.path.join(self.spk2info_path, spk_id + '.pt')
             if not os.path.exists(spk_info_path):
-                if spk_file:
-                    # 如果spk 本地存储不存在，而传入了spk_file 方法通过 spk_id 加载文件
-                    spk_info_bin = spk_file(spk_id)
-                    with open(spk_info_path, 'wb') as f:
-                        f.write(spk_info_bin)
-                else:
-                    raise ValueError(f'not found spk2info: {spk_id} and no spk_file')
+                raise ValueError(f'not found spk2info: {spk_id}')
             spk_info = torch.load(spk_info_path, map_location=self.device, weights_only=False)
             self.spk2info[spk_id] = spk_info
 
@@ -446,8 +441,8 @@ class CosyVoiceFrontEnd:
         if os.path.exists(os.path.join(self.spk2info_path, spk_id + '.pt')):
             os.remove(os.path.join(self.spk2info_path, spk_id + '.pt'))
 
-    def frontend_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id, spk_file: Callable = None):
-        self.load_spk_info(spk_id, spk_file)
+    def frontend_instruct2_by_spk_id(self, tts_text, instruct_text, spk_id):
+        self.load_spk_info(spk_id)
         tts_text_token, _ = self._extract_text_token(tts_text)
         prompt_text_token, _ = self._extract_text_token(instruct_text + '<|endofprompt|>')
         model_input = {'text': tts_text_token,
@@ -459,8 +454,8 @@ class CosyVoiceFrontEnd:
         }
         return model_input
 
-    def frontend_zero_shot_by_spk_id(self, tts_text, spk_id, spk_file: Callable = None):
-        self.load_spk_info(spk_id, spk_file)
+    def frontend_zero_shot_by_spk_id(self, tts_text, spk_id):
+        self.load_spk_info(spk_id)
         tts_text_token, _ = self._extract_text_token(tts_text)
         model_input = {'text': tts_text_token,
                        'prompt_text': self.spk2info[spk_id]['prompt_text_token'],
