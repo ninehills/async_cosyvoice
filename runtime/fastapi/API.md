@@ -11,7 +11,7 @@
 ### 请求参数（application/form）
 
 - `model` (字符串, 可选): 模型选择，目前支持"FunAudioLLM/CosyVoice2-0.5B"，默认为"FunAudioLLM/CosyVoice2-0.5B"
-- `customName` (字符串, 必需): 自定义音色名称
+- `customName` (字符串, 必需): 自定义音色名称，注意仅能使用字母、数字、下划线、横线，且不能超过30个字符
 - `text` (字符串, 必需): 参考文本
 - `file` (文件, 必需): 参考音频文件
 
