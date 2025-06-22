@@ -26,7 +26,9 @@ from tqdm import tqdm
 
 
 class AsyncCosyVoice2:
-    def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False, cache_dir='./cache'):
+    def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False, cache_dir='./cache',
+        model_configs: dict = None,
+    ):
         self.instruct = True if '-Instruct' in model_dir else False
         self.model_dir = model_dir
         self.fp16 = fp16
@@ -45,11 +47,13 @@ class AsyncCosyVoice2:
         if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
             load_jit, load_trt, fp16 = False, False, False
             logging.warning('no cuda device, set load_jit/load_trt/fp16 to False')
+        model_configs = model_configs or {}
         self.model = CosyVoice2Model(
             model_dir,
             configs['flow'],
             configs['hift'],
-            fp16
+            fp16,
+            **model_configs,
         )
         self.model.load(
             '{}/flow.pt'.format(model_dir),

@@ -336,9 +336,11 @@ def main(args):
         load_trt=args.load_trt,
         fp16=args.fp16,
         cache_dir=CACHE_DIR,
-        thread_count=settings.thread_count,
-        peer_chunk_token_num=settings.peer_chunk_token_num,
-        estimator_count=settings.estimator_count,
+        model_configs=dict(
+            thread_count=settings.thread_count,
+            peer_chunk_token_num=settings.peer_chunk_token_num,
+            estimator_count=settings.estimator_count,
+        ),
     )
 
     import uvicorn
