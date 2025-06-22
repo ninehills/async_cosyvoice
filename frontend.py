@@ -14,6 +14,7 @@
 import os
 import re
 import json
+import time
 import inflect
 from functools import partial
 from collections import OrderedDict
@@ -302,8 +303,10 @@ class CosyVoiceFrontEnd:
 
         if text_frontend is False:
             return [text] if split is True else text
-
+        
+        start = time.perf_counter()
         text = text.strip()
+        text_len = len(text)
         if self.use_ttsfrd:
             texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
             text = ''.join(texts)
@@ -329,6 +332,7 @@ class CosyVoiceFrontEnd:
                 texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "en", token_max_n=80,
                                              token_min_n=60, merge_len=20, comma_split=False))
         texts = [i for i in texts if not is_only_punctuation(i)]
+        logging.debug(f'text_normalize text_len {text_len} cost {time.perf_counter() - start:.2f}s')
         return texts if split is True else text
 
     def frontend_sft(self, tts_text, spk_id):
