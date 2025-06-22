@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # redis 地址
     redis_dsn: RedisDsn = 'redis://user:pass@localhost:6379/0'
 
+    # 配置
+    thread_count: int = 4, # token2wav threads
+    peer_chunk_token_num: int = 60, # 流式请求时，初始的每个chunk处理语音token的数量。越小则首字节延迟越低，但性能越差。
+    estimator_count: int = 4, # flow 的 estimator 的数量
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
@@ -324,7 +329,17 @@ async def read_current_user(user_id: Annotated[str, Depends(get_current_user_id)
 
 def main(args):
     global cosyvoice
-    cosyvoice = AsyncCosyVoice2(args.model_dir, load_jit=args.load_jit, load_trt=args.load_trt, fp16=args.fp16, cache_dir=CACHE_DIR)
+    logging.info("Init AsyncCosyVoice2 with args: %s, settings: %s", args, settings)
+    cosyvoice = AsyncCosyVoice2(
+        args.model_dir,
+        load_jit=args.load_jit,
+        load_trt=args.load_trt,
+        fp16=args.fp16,
+        cache_dir=CACHE_DIR,
+        thread_count=settings.thread_count,
+        peer_chunk_token_num=settings.peer_chunk_token_num,
+        estimator_count=settings.estimator_count,
+    )
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

@@ -64,6 +64,9 @@ class CosyVoice2Model:
          hift: HiFTGenerator | torch.nn.Module,
          fp16: bool,
          mix_ratio: List[int] = None,
+         thread_count: int = 4, # token2wav threads
+         peer_chunk_token_num: int = 60, # 流式请求时，初始的每个chunk处理语音token的数量。越小则首字节延迟越低，但性能越差。
+         estimator_count: int = ESTIMATOR_COUNT, # flow 的 estimator 的数量，默认为 config.py 中的ESTIMATOR_COUNT
     ):
         # vllm engine 的参数配置
         engine_args = AsyncEngineArgs(
@@ -71,8 +74,9 @@ class CosyVoice2Model:
             **ENGINE_ARGS,
         )
         self.llm_engine: AsyncLLMEngine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.thread_count = 4 # set to 1 to avoid oom
-        self.peer_chunk_token_num = 60 # 设置初始的每个chunk处理语音token的数量
+        self.thread_count = thread_count
+        self.peer_chunk_token_num = peer_chunk_token_num
+        self.estimator_count = estimator_count
         self.thread_executor = ThreadPoolExecutor(max_workers=self.thread_count)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -149,7 +153,7 @@ class CosyVoice2Model:
             self.flow.decoder.estimator_engine = trt.Runtime(trt.Logger(trt.Logger.INFO)).deserialize_cuda_engine(f.read())
         if self.flow.decoder.estimator_engine is None:
             raise ValueError('failed to load trt {}'.format(flow_decoder_estimator_model))
-        self.flow.decoder.estimator = EstimatorWrapper(self.flow.decoder.estimator_engine, estimator_count=ESTIMATOR_COUNT)
+        self.flow.decoder.estimator = EstimatorWrapper(self.flow.decoder.estimator_engine, estimator_count=self.estimator_count)
 
     async def background_llm_inference(self, out_queue, prompt_token_ids, request_id, stop_token_ids, max_tokens):
         sampling_params = SamplingParams(**SAMPLING_PARAMS)
