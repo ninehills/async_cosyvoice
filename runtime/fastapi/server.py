@@ -272,7 +272,7 @@ async def text_to_speech(request: SpeechRequest, user_id: Annotated[str, Depends
 async def upload_voice(
     user_id: Annotated[str, Depends(get_current_user_id)],
     model: Optional[str] = Form(default="FunAudioLLM/CosyVoice2-0.5B"),
-    customName: str = Form(...),
+    customName: str = Form(..., regex="^[a-zA-Z0-9_-]{1,30}$", description="仅支持字母、数字、下划线、横线，最大长度30个字符"),
     text: str = Form(...),
     file: UploadFile = File(...),
 ):

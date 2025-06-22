@@ -332,7 +332,7 @@ class CosyVoiceFrontEnd:
                 texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "en", token_max_n=80,
                                              token_min_n=60, merge_len=20, comma_split=False))
         texts = [i for i in texts if not is_only_punctuation(i)]
-        logging.debug(f'text_normalize text_len {text_len} cost {time.perf_counter() - start:.2f}s')
+        logging.debug(f'text_normalize text_len {text_len} cost {time.perf_counter() - start:.6f}s')
         return texts if split is True else text
 
     def frontend_sft(self, tts_text, spk_id):
