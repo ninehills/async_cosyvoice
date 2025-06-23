@@ -185,9 +185,8 @@ class CosyVoice2Model:
                 await asyncio.sleep(0.005)
 
     async def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
-        device = prompt_text.device
-        prompt_text = tensor_to_list(prompt_text + torch.tensor(6564, device=device))
-        llm_prompt_speech_token = tensor_to_list(llm_prompt_speech_token.to(device))
+        prompt_text = tensor_to_list(prompt_text + torch.tensor(6564))
+        llm_prompt_speech_token = tensor_to_list(llm_prompt_speech_token)
 
         start_time = time.time()
         if isinstance(text, Union[Generator,AsyncGenerator]):
@@ -311,11 +310,6 @@ class CosyVoice2Model:
             llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             prompt_speech_feat=torch.zeros(1, 0, 80), stream=False, speed=1.0, **kwargs):
-        # 显式将输入张量移至CPU
-        prompt_text = prompt_text.cpu()
-        llm_prompt_speech_token = llm_prompt_speech_token.cpu()
-        flow_prompt_speech_token = flow_prompt_speech_token.to(self.device)
-        prompt_speech_feat = prompt_speech_feat.to(self.device)
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         async with self.lock:
