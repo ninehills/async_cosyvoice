@@ -261,44 +261,50 @@ class CosyVoice2Model:
         # 清空CUDA cache， 注意如果要加，需要增加 threading lock 以避免显存访问冲突。默认不用加。
         # torch.cuda.synchronize()
         # torch.cuda.empty_cache()
-
-        torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑
-        stream = self.stream_pool.get()
-        with torch.cuda.stream(stream):
-            tts_mel, _ = self.flow.inference(token=token.to(self.device),
-                                             token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
-                                             prompt_token=prompt_token.to(self.device),
-                                             prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
-                                             prompt_feat=prompt_feat.to(self.device),
-                                             prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(self.device),
-                                             embedding=embedding.to(self.device),
-                                             finalize=finalize)
-            tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
-            # append hift cache
-            if self.hift_cache_dict[uuid] is not None:
-                hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'], self.hift_cache_dict[uuid]['source']
-                tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
-            else:
-                hift_cache_source = torch.zeros(1, 1, 0)
-            # keep overlap mel and hift cache
-            if finalize is False:
-                tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+        try:
+            torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑
+            stream = self.stream_pool.get()
+            with torch.cuda.stream(stream):
+                tts_mel, _ = self.flow.inference(token=token.to(self.device),
+                                                token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_token=prompt_token.to(self.device),
+                                                prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_feat=prompt_feat.to(self.device),
+                                                prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(self.device),
+                                                embedding=embedding.to(self.device),
+                                                finalize=finalize)
+                tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
+                # append hift cache
                 if self.hift_cache_dict[uuid] is not None:
-                    tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
-                self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:],
-                                              'source': tts_source[:, :, -self.source_cache_len:],
-                                              'speech': tts_speech[:, -self.source_cache_len:]}
-                tts_speech = tts_speech[:, :-self.source_cache_len]
-            else:
-                if speed != 1.0:
-                    assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
-                    tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
-                tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
-                if self.hift_cache_dict[uuid] is not None:
-                    tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
-            torch.cuda.synchronize(torch.cuda.current_stream())
-            self.stream_pool.put(stream)
-            return tts_speech
+                    hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'].to(self.device), self.hift_cache_dict[uuid]['source'].to(self.device)
+                    tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
+                else:
+                    hift_cache_source = torch.zeros(1, 1, 0).to(self.device)
+                # keep overlap mel and hift cache
+                if finalize is False:
+                    tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+                    if self.hift_cache_dict[uuid] is not None:
+                        tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'].to(self.device), self.speech_window)
+                    self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:].to('cpu'),
+                                                'source': tts_source[:, :, -self.source_cache_len:].to('cpu'),
+                                                'speech': tts_speech[:, -self.source_cache_len:].to('cpu')}
+                    tts_speech = tts_speech[:, :-self.source_cache_len]
+                else:
+                    if speed != 1.0:
+                        assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
+                        tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
+                    tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+                    if self.hift_cache_dict[uuid] is not None:
+                        tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'].to(self.device), self.speech_window)
+                torch.cuda.synchronize(torch.cuda.current_stream())
+                self.stream_pool.put(stream)
+                return tts_speech
+        except Exception as e:
+            if "an illegal memory access was encountered" in str(e):
+                logging.error(f"CUDA error: {e}")
+                import sys
+                sys.exit(1)
+            raise e
 
     async def async_tts(self, text, flow_embedding, llm_embedding=torch.zeros(0, 192),
             prompt_text=torch.zeros(1, 0, dtype=torch.int32),
