@@ -78,6 +78,7 @@ class CosyVoice2Model:
         self.peer_chunk_token_num = peer_chunk_token_num
         self.estimator_count = estimator_count
         self.thread_executor = ThreadPoolExecutor(max_workers=self.thread_count)
+        self.thread_local = threading.local()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.stream_pool = queue.Queue()
@@ -124,6 +125,12 @@ class CosyVoice2Model:
         self.background_loop = asyncio.new_event_loop()
         self.loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self.loop_thread.start()
+
+    def get_stream_for_thread(self):
+        """获取当前线程绑定的 stream"""
+        if not hasattr(self.thread_local, 'stream'):
+            self.thread_local.stream = self.stream_pool.get()
+        return self.thread_local.stream
 
     def _run_event_loop(self):
         asyncio.set_event_loop(self.background_loop)
@@ -257,12 +264,10 @@ class CosyVoice2Model:
 
 
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, token_offset, finalize=False, speed=1.0):
-        # 清空CUDA cache， 注意如果要加，需要增加 threading lock 以避免显存访问冲突。默认不用加。
-        # torch.cuda.synchronize()
-        # torch.cuda.empty_cache()
+        """在线程池中之行，需要特别注意并发安全问题"""
+        # torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑（正常来说不需要，因为每次都有回收）
+        stream = self.get_stream_for_thread() # 获取线程绑定的stream，每个线程的stream不变。
         try:
-            torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑
-            stream = self.stream_pool.get()
             with torch.cuda.stream(stream):
                 tts_mel, _ = self.flow.inference(token=token.to(self.device),
                                                 token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
@@ -273,7 +278,7 @@ class CosyVoice2Model:
                                                 embedding=embedding.to(self.device),
                                                 finalize=finalize)
                 tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
-                # append hift cache
+                # append hift cache，为避免冲突 hift_cache_dit 只保存 cpu 上的元素。
                 if self.hift_cache_dict[uuid] is not None:
                     hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'].to(self.device), self.hift_cache_dict[uuid]['source'].to(self.device)
                     tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
@@ -295,8 +300,7 @@ class CosyVoice2Model:
                     tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
                     if self.hift_cache_dict[uuid] is not None:
                         tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'].to(self.device), self.speech_window)
-                torch.cuda.synchronize(torch.cuda.current_stream())
-                self.stream_pool.put(stream)
+                stream.synchronize()
                 return tts_speech
         except Exception as e:
             if "an illegal memory access was encountered" in str(e):
