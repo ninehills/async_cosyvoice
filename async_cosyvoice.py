@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 import time
+import yaml
 from typing import Generator, Union, AsyncGenerator, Callable
 os.environ["VLLM_USE_V1"] = '1'
 
@@ -48,23 +49,14 @@ class AsyncCosyVoice2:
             load_jit, load_trt, fp16 = False, False, False
             logging.warning('no cuda device, set load_jit/load_trt/fp16 to False')
         model_configs = model_configs or {}
+        model_configs["load_jit"] = load_jit
+        model_configs["load_trt"] = load_trt
         self.model = CosyVoice2Model(
             model_dir,
-            configs['flow'],
-            configs['hift'],
+            '{}/cosyvoice2.yaml'.format(model_dir),
             fp16,
             **model_configs,
         )
-        self.model.load(
-            '{}/flow.pt'.format(model_dir),
-            '{}/hift.pt'.format(model_dir),
-        )
-        if load_jit:
-            self.model.load_jit('{}/flow.encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'))
-        if load_trt:
-            self.model.load_trt('{}/flow.decoder.estimator.{}.mygpu.plan'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
-                                self.fp16)
         del configs
 
     def list_available_spks(self):

@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import queue
+from hyperpyyaml import load_hyperpyyaml
 import threading
 from typing import AsyncGenerator, Generator, List, Union
 import torch
@@ -60,13 +61,14 @@ class CosyVoice2Model:
 
     def __init__(self,
          model_dir: str,
-         flow: CausalMaskedDiffWithXvec | torch.nn.Module,
-         hift: HiFTGenerator | torch.nn.Module,
+         model_yaml: str,
          fp16: bool,
          mix_ratio: List[int] = None,
          thread_count: int = 4, # token2wav threads
          peer_chunk_token_num: int = 60, # 流式请求时，初始的每个chunk处理语音token的数量。越小则首字节延迟越低，但性能越差。
          estimator_count: int = ESTIMATOR_COUNT, # flow 的 estimator 的数量，默认为 config.py 中的ESTIMATOR_COUNT
+         load_jit: bool = False,
+         load_trt: bool = False,
     ):
         # vllm engine 的参数配置
         engine_args = AsyncEngineArgs(
@@ -86,16 +88,8 @@ class CosyVoice2Model:
             stream = torch.cuda.Stream(self.device)
             self.stream_pool.put(stream)
 
-        self.flow = flow
-        self.hift = hift
         self.fp16 = fp16
-        self.flow.fp16 = fp16
-        if self.fp16 is True:
-            self.flow.half()
-        self.token_hop_len = 2 * self.flow.input_frame_rate
-        # here we fix flow encoder/decoder decoding_chunk_size, in the future we will send it as arguments, or use cache
-        self.flow.encoder.static_chunk_size = 2 * self.flow.input_frame_rate
-        self.flow.decoder.estimator.static_chunk_size = 2 * self.flow.input_frame_rate * self.flow.token_mel_ratio
+
         # hift cache
         self.mel_cache_len = 8
         self.source_cache_len = int(self.mel_cache_len * 480)
@@ -126,41 +120,78 @@ class CosyVoice2Model:
         self.loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self.loop_thread.start()
 
+        self.model_pool = queue.Queue()
+        for i in range(self.thread_count):
+            logging.info("start load model for thread {}".format(i))
+            with open(model_yaml, 'r') as f:
+                configs = load_hyperpyyaml(f, overrides={'model_path': model_dir})
+            flow = configs['flow']
+            hift = configs['hift']
+            flow.fp16 = fp16
+            if self.fp16 is True:
+                flow.half()
+            self.token_hop_len = 2 * flow.input_frame_rate
+            self.pre_lookahead_len = flow.pre_lookahead_len
+            self.input_frame_rate = flow.input_frame_rate
+            # here we fix flow encoder/decoder decoding_chunk_size, in the future we will send it as arguments, or use cache
+            flow.encoder.static_chunk_size = 2 * flow.input_frame_rate
+            flow.decoder.estimator.static_chunk_size = 2 * flow.input_frame_rate * flow.token_mel_ratio
+
+            self.load(
+                flow,
+                hift,
+                '{}/flow.pt'.format(model_dir),
+                '{}/hift.pt'.format(model_dir),
+            )
+            if load_jit:
+                self.load_jit(flow, '{}/flow.encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'))
+            if load_trt:
+                self.load_trt(flow, '{}/flow.decoder.estimator.{}.mygpu.plan'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
+                                '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
+                                self.fp16)
+            self.model_pool.put((flow, hift))
+            del configs
+
     def get_stream_for_thread(self):
         """获取当前线程绑定的 stream"""
         if not hasattr(self.thread_local, 'stream'):
             self.thread_local.stream = self.stream_pool.get()
         return self.thread_local.stream
+    
+    def get_models_for_thread(self):
+        if not hasattr(self.thread_local, 'models'):
+            self.thread_local.models = self.model_pool.get()
+        return self.thread_local.models
 
     def _run_event_loop(self):
         asyncio.set_event_loop(self.background_loop)
         self.background_loop.run_forever()
 
-    def load(self, flow_model, hift_model):
-        self.flow.load_state_dict(torch.load(flow_model, weights_only=True, map_location=self.device), strict=True)
-        self.flow.to(self.device).eval()
+    def load(self, flow, hift, flow_model, hift_model):
+        flow.load_state_dict(torch.load(flow_model, weights_only=True, map_location=self.device), strict=True)
+        flow.to(self.device).eval()
         # in case hift_model is a hifigan model
         hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(hift_model, weights_only=True, map_location=self.device).items()}
-        self.hift.load_state_dict(hift_state_dict, strict=True)
-        self.hift.to(self.device).eval()
+        hift.load_state_dict(hift_state_dict, strict=True)
+        hift.to(self.device).eval()
 
-    def load_jit(self, flow_encoder_model):
+    def load_jit(self, flow, flow_encoder_model):
         flow_encoder = torch.jit.load(flow_encoder_model, map_location=self.device)
-        self.flow.encoder = flow_encoder
+        flow.encoder = flow_encoder
 
-    def load_trt(self, flow_decoder_estimator_model, flow_decoder_onnx_model, fp16):
+    def load_trt(self, flow, flow_decoder_estimator_model, flow_decoder_onnx_model, fp16):
         assert torch.cuda.is_available(), 'tensorrt only supports gpu!'
         if not os.path.exists(flow_decoder_estimator_model):
             convert_onnx_to_trt(flow_decoder_estimator_model, flow_decoder_onnx_model, fp16)
         if os.path.getsize(flow_decoder_estimator_model) == 0:
             raise ValueError('{} is empty file, delete it and export again!'.format(flow_decoder_estimator_model))
-        del self.flow.decoder.estimator
+        del flow.decoder.estimator
         import tensorrt as trt
         with open(flow_decoder_estimator_model, 'rb') as f:
-            self.flow.decoder.estimator_engine = trt.Runtime(trt.Logger(trt.Logger.INFO)).deserialize_cuda_engine(f.read())
-        if self.flow.decoder.estimator_engine is None:
+            flow.decoder.estimator_engine = trt.Runtime(trt.Logger(trt.Logger.INFO)).deserialize_cuda_engine(f.read())
+        if flow.decoder.estimator_engine is None:
             raise ValueError('failed to load trt {}'.format(flow_decoder_estimator_model))
-        self.flow.decoder.estimator = EstimatorWrapper(self.flow.decoder.estimator_engine, estimator_count=self.estimator_count)
+        flow.decoder.estimator = EstimatorWrapper(flow.decoder.estimator_engine, estimator_count=self.estimator_count)
 
     async def background_llm_inference(self, out_queue, prompt_token_ids, request_id, stop_token_ids, max_tokens):
         sampling_params = SamplingParams(**SAMPLING_PARAMS)
@@ -267,9 +298,10 @@ class CosyVoice2Model:
         """在线程池中执行，需要特别注意并发安全问题"""
         # torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑（正常来说不需要，因为每次都有回收）
         stream = self.get_stream_for_thread() # 获取线程绑定的stream，每个线程的stream不变。
+        flow, hift = self.get_models_for_thread() # 获取线程绑定的模型，每个线程的模型不变。
         try:
             with torch.cuda.stream(stream):
-                tts_mel, _ = self.flow.inference(token=token.to(self.device),
+                tts_mel, _ = flow.inference(token=token.to(self.device),
                                                 token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
                                                 prompt_token=prompt_token.to(self.device),
                                                 prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
@@ -277,7 +309,7 @@ class CosyVoice2Model:
                                                 prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(self.device),
                                                 embedding=embedding.to(self.device),
                                                 finalize=finalize)
-                tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
+                tts_mel = tts_mel[:, :, token_offset * flow.token_mel_ratio:]
                 # append hift cache，为避免冲突 hift_cache_dit 只保存 cpu 上的元素。
                 if self.hift_cache_dict[uuid] is not None:
                     hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'].to(self.device), self.hift_cache_dict[uuid]['source'].to(self.device)
@@ -286,7 +318,7 @@ class CosyVoice2Model:
                     hift_cache_source = torch.zeros(1, 1, 0).to(self.device)
                 # keep overlap mel and hift cache
                 if finalize is False:
-                    tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+                    tts_speech, tts_source = hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
                     if self.hift_cache_dict[uuid] is not None:
                         tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'].to(self.device), self.speech_window)
                     self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:].to('cpu'),
@@ -297,7 +329,7 @@ class CosyVoice2Model:
                     if speed != 1.0:
                         assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
                         tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
-                    tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+                    tts_speech, tts_source = hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
                     if self.hift_cache_dict[uuid] is not None:
                         tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'].to(self.device), self.speech_window)
                 stream.synchronize()
@@ -319,6 +351,7 @@ class CosyVoice2Model:
         llm_prompt_speech_token = llm_prompt_speech_token.cpu()
         flow_prompt_speech_token = flow_prompt_speech_token.cpu()
         prompt_speech_feat = prompt_speech_feat.cpu()
+        flow_embedding = flow_embedding.cpu()
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         async with self.lock:
@@ -326,7 +359,7 @@ class CosyVoice2Model:
             self.llm_end_dict[this_uuid] = False
             self.hift_cache_dict[this_uuid] = None
         # queue: asyncio.Queue[int|None] = asyncio.Queue()
-        llm_task = asyncio.create_task(self.llm_job(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
+        llm_task = asyncio.create_task(self.llm_job(text, prompt_text, llm_prompt_speech_token, None, this_uuid))
         if stream is True:
             token_offset = 0
             peer_chunk_token_num = self.peer_chunk_token_num
@@ -335,8 +368,8 @@ class CosyVoice2Model:
             start_time = time.time()
             chunk_index = 0
             while True:
-                if (pending_num:= len(self.tts_speech_token_dict[this_uuid]) - token_offset) >= (peer_chunk_token_num + self.flow.pre_lookahead_len):
-                    this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + peer_chunk_token_num + self.flow.pre_lookahead_len]).unsqueeze(dim=0)
+                if (pending_num:= len(self.tts_speech_token_dict[this_uuid]) - token_offset) >= (peer_chunk_token_num + self.pre_lookahead_len):
+                    this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + peer_chunk_token_num + self.pre_lookahead_len]).unsqueeze(dim=0)
                     this_tts_speech = await loop.run_in_executor(self.thread_executor,
                         self.token2wav,
                         this_tts_speech_token,
@@ -352,7 +385,7 @@ class CosyVoice2Model:
                     chunk_index += 1
                     cost_time = time.time() - start_time
                     # 动态增大 peer_chunk_token_num，以减少调用 token2wav 的次数
-                    duration = token_offset/self.flow.input_frame_rate
+                    duration = token_offset/self.input_frame_rate
                     if (multiples:= (duration - cost_time)/(cost_time/chunk_index)) > 4:
                         if self.llm_end_dict[this_uuid] is True:   # 直接一次性推理 token2wav 返回剩余的语音
                             break
