@@ -264,7 +264,7 @@ class CosyVoice2Model:
 
 
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, token_offset, finalize=False, speed=1.0):
-        """在线程池中之行，需要特别注意并发安全问题"""
+        """在线程池中执行，需要特别注意并发安全问题"""
         # torch.cuda.current_stream().synchronize() # 将当前流进行同步了再处理后续逻辑（正常来说不需要，因为每次都有回收）
         stream = self.get_stream_for_thread() # 获取线程绑定的stream，每个线程的stream不变。
         try:
@@ -314,6 +314,11 @@ class CosyVoice2Model:
             llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
             prompt_speech_feat=torch.zeros(1, 0, 80), stream=False, speed=1.0, **kwargs):
+        
+        prompt_text = prompt_text.cpu()
+        llm_prompt_speech_token = llm_prompt_speech_token.cpu()
+        flow_prompt_speech_token = flow_prompt_speech_token.cpu()
+        prompt_speech_feat = prompt_speech_feat.cpu()
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         async with self.lock:
