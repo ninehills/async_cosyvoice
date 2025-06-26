@@ -18,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security.utils import get_authorization_scheme_param
+from starlette.requests import Request
 from fastapi import Depends, status
 from pydantic import RedisDsn
 import redis.asyncio as redis
@@ -62,6 +64,35 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env")
 
+class HTTPBearerWithCookie(HTTPBearer):
+    def __init__(self, cookie_name: str="access_key"):
+        super().__init__()
+        self.cookie_name = cookie_name
+    
+    async def __call__(
+        self, request: Request
+    ) -> Optional[HTTPAuthorizationCredentials]:
+        authorization = request.headers.get("Authorization")
+        if not authorization and self.cookie_name in request.cookies:
+            authorization = f'Bearer {request.cookies.get(self.cookie_name)}'
+        scheme, credentials = get_authorization_scheme_param(authorization)
+        if not (authorization and scheme and credentials):
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN, detail="Not authenticated"
+                )
+            else:
+                return None
+        if scheme.lower() != "bearer":
+            if self.auto_error:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail="Invalid authentication credentials",
+                )
+            else:
+                return None
+        return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
+
 
 # 全局实例
 cosyvoice: AsyncCosyVoice2 | None = None
@@ -72,7 +103,7 @@ redis_client = redis.Redis.from_url(str(settings.redis_dsn))
 voice_storage = VoiceStorage(redis_client=redis_client)
 # 鉴权
 access_keys = {user.access_key: user.user_id for user in settings.preset_users}
-security = HTTPBearer()
+security = HTTPBearerWithCookie()
 
 # 依赖项：获取当前用户ID
 async def get_current_user_id(
