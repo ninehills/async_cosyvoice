@@ -30,6 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f'{ROOT_DIR}/../../..')
 sys.path.append(f'{ROOT_DIR}/../../../third_party/Matcha-TTS')
 CACHE_DIR = os.path.join(ROOT_DIR, 'cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 log_level = logging.INFO
 if os.getenv("MOCK_ENABLED", "0") == "1":
@@ -243,13 +244,22 @@ async def text_to_speech(request: SpeechRequest, user_id: Annotated[str, Depends
         spk_info_path = os.path.join(CACHE_DIR, request.voice + '.pt')
         if not os.path.exists(spk_info_path):
             logging.info(f"voice {request.voice} not in cache dir {spk_info_path}, download it.")
+            tmp_file = f"{spk_info_path}.{uuid.uuid4().hex}"
             try:
                 spk_info = await voice_storage.get_voice(request.voice)
                 if spk_info:
-                    with open(spk_info_path, 'wb') as f:
+                    with open(tmp_file, 'wb') as f:
                         f.write(spk_info)
+                    if not os.path.exists(spk_info_path):
+                        logging.info(f"download {request.voice} spk info file, and move to {spk_info_path}.")
+                        os.rename(tmp_file, spk_info_path)
+                    else:
+                        logging.info(f"spk info file {spk_info_path} already download by other thread, skip move it.")
             except KeyError as e:
                 logging.warning(f"voice {request.voice} not found in redis, please upload it first: {e}")
+            finally:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
     try:
         # 构建响应头
         content_type = get_content_type(
