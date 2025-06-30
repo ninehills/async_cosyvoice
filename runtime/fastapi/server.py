@@ -23,6 +23,7 @@ from starlette.requests import Request
 from fastapi import Depends, status
 from pydantic import RedisDsn
 import redis.asyncio as redis
+from starlette.status import HTTP_403_FORBIDDEN
 
 from utils import convert_audio_tensor_to_bytes, load_audio_from_bytes
 from voice_storage import VoiceStorage
