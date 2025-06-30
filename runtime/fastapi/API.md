@@ -176,3 +176,43 @@ curl -X POST \
   http://localhost:8022/v1/audio/voice/deletions
 ```
 
+
+## 给参考音频取别名
+
+### 接口
+
+- **URL**: `/v1/audio/voice/alias`
+- **方法**: `POST`
+- **权限**: 需要用户认证
+
+### 请求参数（application/json）
+
+```json
+{
+    "uri": "speech:xxx:xxx:xxx",
+    "alias": "speech:xxxxx"
+}
+```
+
+注意：uri 必须存在，而alias 不能和已有的uri重复，但是可以覆盖已有的 alias。
+
+### 响应
+
+- **状态码**: `200 OK`
+- **内容**:
+  ```json
+  {
+      "uri": "speech:xxx:xxx:xxx",
+      "alias": "speech:xxxxx"
+  }
+  ```
+
+### 示例
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer your_access_key" \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "speech:xxx:xxx:xxx", "alias": "speech:xxxxx"}' \
+  http://localhost:8022/v1/audio/voice/alias
+```

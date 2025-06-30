@@ -155,6 +155,18 @@ class VoiceDeletionRequest(BaseModel):
         description="要删除的音色URI"
     )
 
+class VoiceAliasRequest(BaseModel):
+    """音频别名请求参数"""
+    uri: str = Field(
+        ...,
+        examples=["speech:your-voice-name:xxx:xxx"],
+        description="要设置别名的音色URI"
+    )
+    alias: str = Field(
+        ...,
+        pattern=r"^speech:",
+        description="音色的别名，必须用 speech: 开头，其他的不限制，不能和已有的音色重复，否则设置失败。"
+    )
 
 class SpeechRequest(BaseModel):
     """语音合成请求参数"""
@@ -358,6 +370,25 @@ async def delete_voice(request: VoiceDeletionRequest, user_id: Annotated[str, De
         raise he
     except Exception as e:
         logging.error(f"删除音色失败: {str(e)}", exc_info=True)
+        raise HTTPException(500, detail=str(e))
+
+@app.post("/v1/audio/voice/alias")
+async def alias_voice(request: VoiceAliasRequest, user_id: Annotated[str, Depends(get_current_user_id)]):
+    """给用户的参考音频取别名"""
+    try:
+        # 验证URI是否属于当前用户
+        uri_parts = request.uri.split(":")
+        if len(uri_parts) < 3 or uri_parts[1] != user_id:
+            raise HTTPException(403, detail="无权取别名此音色")
+        
+        err_msg = await voice_storage.alias_voice(request.uri, request.alias)
+        if err_msg:
+            raise HTTPException(400, detail=err_msg)
+        return {"alias": request.alias, "uri": request.uri}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"取别名失败: {str(e)}", exc_info=True)
         raise HTTPException(500, detail=str(e))
 
 @app.get("/auth/me")
