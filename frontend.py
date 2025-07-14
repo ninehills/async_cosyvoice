@@ -191,13 +191,13 @@ class CosyVoiceFrontEnd:
         self.device = 'cpu'
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        option.intra_op_num_threads = 1
+        # option.intra_op_num_threads = 1
         self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
                                                                                 "CPUExecutionProvider"])
-        self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option,
-                                                                     providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
-                                                                                "CPUExecutionProvider"])
-
+        #self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option,
+        #                                                             providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
+        #                                                                        "CPUExecutionProvider"])
+        self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option, providers=["CPUExecutionProvider"])
         self.spk2info = LRUCache(max_size=10000)
 
         if os.path.exists(spk2info):
@@ -268,25 +268,34 @@ class CosyVoiceFrontEnd:
                 yield text_token[:, i: i + 1]
 
     def _extract_speech_token(self, speech):
+        logging.debug('_extract_speech_token start')
         assert speech.shape[1] / 16000 <= 30, 'do not support extract speech token for audio longer than 30s'
         feat = whisper.log_mel_spectrogram(speech, n_mels=128)
-        speech_token = self.speech_tokenizer_session.run(None,
-                                                         {self.speech_tokenizer_session.get_inputs()[0].name:
+        logging.debug('_extract_speech_token log_mel_spectrogram finished')
+        speech_token_input = {self.speech_tokenizer_session.get_inputs()[0].name:
                                                           feat.detach().cpu().numpy(),
                                                           self.speech_tokenizer_session.get_inputs()[1].name:
-                                                          np.array([feat.shape[2]], dtype=np.int32)})[0].flatten().tolist()
+                                                          np.array([feat.shape[2]], dtype=np.int32)}
+        logging.debug('_extract_speech_token speech_token_input prepared')
+        speech_token_output = self.speech_tokenizer_session.run(None, speech_token_input)
+        logging.debug('_extract_speech_token speech_tokenizer_session run')
+        speech_token = speech_token_output[0].flatten().tolist()
+        logging.debug('_extract_speech_token speech_tokenizer_session finished')
         speech_token = torch.tensor([speech_token], dtype=torch.int32)
         speech_token_len = torch.tensor([speech_token.shape[1]], dtype=torch.int32)
         return speech_token, speech_token_len
 
     def _extract_spk_embedding(self, speech):
+        logging.debug('_extract_spk_embedding start')
         feat = kaldi.fbank(speech,
                            num_mel_bins=80,
                            dither=0,
                            sample_frequency=16000)
+        logging.debug('_extract_spk_embedding fbank finished')
         feat = feat - feat.mean(dim=0, keepdim=True)
         embedding = self.campplus_session.run(None,
                                               {self.campplus_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()})[0].flatten().tolist()
+        logging.debug('_extract_spk_embedding campplus_session finished')
         embedding = torch.tensor([embedding]).to(self.device)
         return embedding
 
@@ -303,7 +312,7 @@ class CosyVoiceFrontEnd:
 
         if text_frontend is False:
             return [text] if split is True else text
-        
+
         start = time.perf_counter()
         text = text.strip()
         text_len = len(text)
@@ -401,16 +410,22 @@ class CosyVoiceFrontEnd:
 
     def generate_spk_info(self, spk_id: str, prompt_text: str, prompt_speech_16k: torch.Tensor, resample_rate:int=24000, name: str=None) -> bytes:
         assert isinstance(spk_id, str)
+        logging.debug(f"generate_spk_info {spk_id} start: prompt_text: {prompt_text}, name: {name}, resample_rate: {resample_rate}")
         prompt_text_token, _ = self._extract_text_token(prompt_text)
+        logging.debug(f"generate_spk_info {spk_id} prompt_text_token finished")
         prompt_speech_resample = torchaudio.transforms.Resample(orig_freq=16000, new_freq=resample_rate)(prompt_speech_16k)
+        logging.debug(f"generate_spk_info {spk_id} Resample finished")
         speech_feat, _ = self._extract_speech_feat(prompt_speech_resample)
+        logging.debug(f"generate_spk_info {spk_id} _extract_speech_feat finished")
         speech_token, speech_token_len = self._extract_speech_token(prompt_speech_16k)
+        logging.debug(f"generate_spk_info {spk_id} _extract_speech_token finished")
         if resample_rate == 24000:
             # cosyvoice2, force speech_feat % speech_token = 2
             token_len = min(int(speech_feat.shape[1] / 2), speech_token.shape[1])
             speech_feat = speech_feat[:, :2 * token_len]
             speech_token = speech_token[:, :token_len]
         embedding = self._extract_spk_embedding(prompt_speech_16k)
+        logging.debug(f"generate_spk_info {spk_id} _extract_spk_embedding finished")
         spk_info = SpeakerInfo(
             name=name,
             spk_id=spk_id,

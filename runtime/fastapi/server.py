@@ -56,12 +56,12 @@ class Settings(BaseSettings):
     # 预设用户和AccessKey，默认是 abc:abc
     preset_users: list[UserAuth] = [UserAuth(user_id="abc", access_key="abc")]
     # redis 地址
-    redis_dsn: RedisDsn = 'redis://user:pass@localhost:6379/0'
+    redis_dsn: RedisDsn = RedisDsn('redis://user:pass@localhost:6379/0')
 
     # 配置
-    thread_count: int = 4, # token2wav threads
-    peer_chunk_token_num: int = 60, # 流式请求时，初始的每个chunk处理语音token的数量。越小则首字节延迟越低，但性能越差。
-    estimator_count: int = 4, # flow 的 estimator 的数量
+    thread_count: int = 4  # token2wav threads
+    peer_chunk_token_num: int = 60  # 流式请求时，初始的每个chunk处理语音token的数量。越小则首字节延迟越低，但性能越差。
+    estimator_count: int = 4  # flow 的 estimator 的数量
 
     model_config = SettingsConfigDict(env_file=".env")
 
@@ -69,7 +69,7 @@ class HTTPBearerWithCookie(HTTPBearer):
     def __init__(self, cookie_name: str="access_key"):
         super().__init__()
         self.cookie_name = cookie_name
-    
+
     async def __call__(
         self, request: Request
     ) -> Optional[HTTPAuthorizationCredentials]:
@@ -209,8 +209,10 @@ async def save_voice_data(customName: str, audio_data: bytes, text: str, user_id
     """保存音频数据并生成音色对应的URI"""
     voice_id = str(uuid.uuid4())[:8]
     uri = f"speech:{user_id}:{customName}:{voice_id}"
+    logging.debug(f"Upload voice {uri}: start")
     # TODO: 目前上传音频是同步阻塞的，会导致服务阻塞大约2-3s，此处应该使用异步方式。
     prompt_speech_16k = load_audio_from_bytes(audio_data, 16000)
+    logging.debug(f"Upload voice {uri}: load_audio_from_bytes finished")
     voice_data = cosyvoice.frontend.generate_spk_info(
         uri,
         text,
@@ -218,6 +220,7 @@ async def save_voice_data(customName: str, audio_data: bytes, text: str, user_id
         24000,
         customName
     )
+    logging.debug(f"Upload voice {uri}: generate_spk_info finished")
     voice_meta = VoiceMeta(
         model=model,
         customName=customName,
@@ -225,6 +228,7 @@ async def save_voice_data(customName: str, audio_data: bytes, text: str, user_id
         uri=uri,
     )
     await voice_storage.save_voice(uri, voice_meta, voice_data)
+    logging.debug(f"Upload voice {uri}: save_voice finished")
     return uri
 
 
@@ -331,9 +335,11 @@ async def upload_voice(
     file: UploadFile = File(...),
 ):
     """增加用户自定义音色"""
+    logging.info(f"Upload voice start: user_id={user_id}, model={model}, customName={customName}, text={text}")
     try:
         audio_data = await file.read()
         uri = await save_voice_data(customName, audio_data, text, user_id, model)
+        logging.info(f"Upload voice success: uri={uri}")
         return VoiceUploadResponse(uri=uri)
     except ValidationError as ve:
         logging.error(f"Upload voice validation error: {ve}")
@@ -361,7 +367,7 @@ async def delete_voice(request: VoiceDeletionRequest, user_id: Annotated[str, De
         uri_parts = request.uri.split(":")
         if len(uri_parts) < 3 or uri_parts[1] != user_id:
             raise HTTPException(403, detail="无权删除此音色")
-        
+
         await voice_storage.delete_voice(request.uri)
         # 从frontend 缓存中删除音色
         cosyvoice.frontend.delete_spk_info(request.uri)
@@ -380,7 +386,7 @@ async def alias_voice(request: VoiceAliasRequest, user_id: Annotated[str, Depend
         uri_parts = request.uri.split(":")
         if len(uri_parts) < 3 or uri_parts[1] != user_id:
             raise HTTPException(403, detail="无权取别名此音色")
-        
+
         err_msg = await voice_storage.alias_voice(request.uri, request.alias)
         if err_msg:
             raise HTTPException(400, detail=err_msg)
@@ -394,7 +400,7 @@ async def alias_voice(request: VoiceAliasRequest, user_id: Annotated[str, Depend
 @app.get("/auth/me")
 async def read_current_user(user_id: Annotated[str, Depends(get_current_user_id)]):
     """返回当前用户信息
-    
+
         Test: curl --header 'Authorization: Bearer 123456' http://127.0.0.1:8022/auth/me
     """
     return {"user_id": user_id}
