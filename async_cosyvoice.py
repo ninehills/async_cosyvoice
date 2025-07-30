@@ -126,16 +126,30 @@ class AsyncCosyVoice2:
 
     async def inference_zero_shot_by_spk_id(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True):
         """使用预定义的说话人执行 zero_shot 推理"""
-        for i in self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend):
+        infos = {
+            "tts_text": tts_text,
+            "spk_id": spk_id,
+        }
+        s_time = time.time()
+        for order, i in enumerate(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
             model_input = self.frontend.frontend_zero_shot_by_spk_id(i, spk_id)
             start_time = time.time()
             last_time = start_time
             chunk_index = 0
             logging.info('synthesis text {}'.format(i))
+            infos[f"s{order}_text_len"] = len(i)
             async for model_output in self.model.async_tts(**model_input, stream=stream, speed=speed):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
+                prefix = f"s{order}_c{chunk_index}"
+                infos[f"{prefix}_speech_len"] = speech_len
+                infos[f"{prefix}_rtf"] = (time.time()-last_time)/speech_len
+                infos[f"{prefix}_cost"] = time.time()-last_time
+                infos[f"s{order}_cost"] = time.time()-start_time
                 logging.info('yield speech index:{}, len {:.2f}, rtf {:.3f},  cost {:.3f}s,  all cost time {:.3f}s'.format(
                     chunk_index, speech_len,  (time.time()-last_time)/speech_len, time.time()-last_time, time.time()-start_time))
                 yield model_output
                 last_time = time.time()
                 chunk_index += 1
+            infos["total_cost"] = time.time()-s_time
+            info_kvs = sorted([f"{i}:{infos[i]}" for i in infos])
+            logging.info(f"trace: {'|'.join(info_kvs)}")
