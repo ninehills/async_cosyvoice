@@ -192,8 +192,9 @@ class CosyVoiceFrontEnd:
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         option.intra_op_num_threads = 8
-        self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
-                                                                                "CPUExecutionProvider"])
+        #self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
+        #                                                                        "CPUExecutionProvider"])
+        self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CPUExecutionProvider"])
         #self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option,
         #                                                             providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
         #                                                                        "CPUExecutionProvider"])
